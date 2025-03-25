@@ -16,6 +16,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class ThreadedLinkChecker {
 
+    private final int POLITENESS_THRESHOLD = 200;
+    private long startTimeMillis;
+    private long endTimeMillis;
     private final Set<String> visitedInternalLinks = ConcurrentHashMap.newKeySet();
     private final Set<String> checkedExternalLinks = ConcurrentHashMap.newKeySet();
     private final ExecutorService executor = Executors.newFixedThreadPool(10);
@@ -30,11 +33,13 @@ public class ThreadedLinkChecker {
     }
 
     public void start(String startUrl, String fromPage) {
+        this.startTimeMillis = System.currentTimeMillis();
         submitTask(startUrl, fromPage);
 
         try {
             doneSignal.await();
             executor.shutdown();
+            this.endTimeMillis = System.currentTimeMillis(); // ⏱️ End timer
             generateHtmlReport(startUrl);
             System.out.println("\u2705 Crawl finished. See broken-links.html for results.");
         } catch (InterruptedException e) {
@@ -77,6 +82,7 @@ public class ThreadedLinkChecker {
 
         if (isInternal) {
             try {
+                Thread.sleep(POLITENESS_THRESHOLD); // Politeness delay before fetching internal HTML content
                 HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
                 connection.setRequestMethod("GET");
                 connection.setConnectTimeout(5000);
@@ -109,8 +115,10 @@ public class ThreadedLinkChecker {
                 } else {
                     System.out.println("Skipping content (not HTML): " + url + " (" + contentType + ")");
                 }
-            } catch (IOException e) {
+            } catch (IOException | InterruptedException e) {
                 System.out.println("\u26A0\uFE0F Error parsing: " + url + " - " + e.getMessage());
+                // Optionally restore the interrupted status if caught
+                Thread.currentThread().interrupt();
             }
         }
     }
@@ -150,6 +158,12 @@ public class ThreadedLinkChecker {
     }
 
     private void generateHtmlReport(String startUrl) {
+
+        long durationMillis = endTimeMillis - startTimeMillis;
+        long seconds = durationMillis / 1000;
+        long minutes = seconds / 60;
+        seconds = seconds % 60;
+
         try (BufferedWriter writer = new BufferedWriter(new FileWriter("broken-links.html"))) {
             writer.write("<!DOCTYPE html><html><head><meta charset='UTF-8'>");
             writer.write("<title>Broken Links Report</title>");
@@ -161,6 +175,7 @@ public class ThreadedLinkChecker {
             writer.write("<tr><td>External links crawled</td><td>" + checkedExternalLinks.size() + "</td></tr>");
             writer.write("<tr><td>Number of Broken pages</td><td>" + brokenLinksByPage.size() + "</td></tr>");
             writer.write("<tr><td>Number of broken links</td><td>" + brokenLinksByPage.values().stream().mapToLong(List::size).sum() + "</td></tr>");
+            writer.write("<tr><td>Total crawl time</td><td>" + minutes + "m " + seconds + "s</td></tr>");
             writer.write("</table>");
 
             for (String sourcePage : brokenLinksByPage.keySet()) {
